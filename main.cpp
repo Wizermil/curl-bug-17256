@@ -5,11 +5,25 @@
 #include <curl/curl.h>
 #include <chrono>
 #include <iostream>
+#include <mutex>
 #include <random>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
 #include <algorithm>
+
+// Thread-safe logging
+std::mutex cout_mutex;
+
+template <typename... Args>
+void log(Args&&... args) {
+    std::ostringstream stream;
+    (stream << ... << std::forward<Args>(args));
+    
+    std::lock_guard<std::mutex> lock(cout_mutex);
+    std::cout << stream.str() << std::endl;
+}
 
 // Discard body callback — we do not need the payload
 static size_t sink(char *ptr, size_t size, size_t nmemb, void *) {
@@ -26,14 +40,14 @@ static int progress_cb(void *clientp, curl_off_t dltotal, curl_off_t dlnow,
   static std::uniform_int_distribution<int> dice(0, 4); // 20% chance
   bool abort = dice(rng) == 0;
   if (abort) {
-    std::cout << "[cancel] Aborting download of " << url << " after " << dlnow / 1024 << " KiB" << std::endl;
+    log("[cancel] Aborting download of ", url, " after ", dlnow / 1024, " KiB");
     return 1;
   }
   return 0;
 }
 
 static CURL *add_easy(CURLM *multi, const std::string &url, bool enable_cancel = false) {
-  std::cout << "[queue] " << url << std::endl;
+  log("[queue] ", url);
   CURL *easy = curl_easy_init();
   curl_easy_setopt(easy, CURLOPT_SSL_VERIFYPEER, 1);
   curl_easy_setopt(easy, CURLOPT_SSL_VERIFYHOST, 2);
@@ -94,7 +108,7 @@ static void worker_thread(int id, const std::vector<std::string> &urls, std::chr
     if (!handles.empty() && pick10(rng) == 0) {
       size_t idx = rng() % handles.size();
       CURL *e = handles[idx];
-      std::cout << "[cancel] thread " << id << " removing handle" << std::endl;
+      log("[cancel] thread ", id, " removing handle");
       curl_multi_remove_handle(multi, e);
       curl_easy_cleanup(e);
       handles.erase(handles.begin() + idx);
@@ -107,7 +121,7 @@ static void worker_thread(int id, const std::vector<std::string> &urls, std::chr
     curl_easy_cleanup(e);
   }
   curl_multi_cleanup(multi);
-  std::cout << "[thread] " << id << " finished" << std::endl;
+  log("[thread] ", id, " finished");
 }
 
 int main() {
@@ -129,6 +143,6 @@ int main() {
   for (auto &t : workers) t.join();
 
   curl_global_cleanup();
-  std::cout << "Finished stress run." << std::endl;
+  log("Finished stress run.");
   return 0;
 }
