@@ -5,14 +5,52 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Sanitizer options
+option(USE_ASAN "Enable Address Sanitizer with use-after-return detection" OFF)
+option(USE_UBSAN "Enable Undefined Behavior Sanitizer" OFF)
+option(USE_TSAN "Enable Thread Sanitizer" OFF)
+
+# Sanitizer compatibility checks
+if(USE_ASAN AND USE_TSAN)
+  message(FATAL_ERROR "Cannot use both Address Sanitizer and Thread Sanitizer together")
+endif()
+
+# Configure sanitizer flags
+if(USE_ASAN)
+  message(STATUS "Enabling Address Sanitizer with use-after-return detection")
+  set(ASAN_FLAGS "-fsanitize=address -fsanitize-address-use-after-return=always -fno-omit-frame-pointer")
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${ASAN_FLAGS}")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${ASAN_FLAGS}")
+  set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
+  set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -fsanitize=address")
+endif()
+
+if(USE_UBSAN)
+  message(STATUS "Enabling Undefined Behavior Sanitizer")
+  set(UBSAN_FLAGS "-fsanitize=undefined -fno-omit-frame-pointer")
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${UBSAN_FLAGS}")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${UBSAN_FLAGS}")
+  set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=undefined")
+  set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -fsanitize=undefined")
+endif()
+
+if(USE_TSAN)
+  message(STATUS "Enabling Thread Sanitizer")
+  set(TSAN_FLAGS "-fsanitize=thread -fno-omit-frame-pointer")
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${TSAN_FLAGS}")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TSAN_FLAGS}")
+  set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=thread")
+  set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -fsanitize=thread")
+endif()
+
 include(FetchContent)
 option(USE_INTERNAL_CURL "Build curl with threaded resolver (no c-ares)" ON)
 
 if(USE_INTERNAL_CURL)
   # Declare the source and desired build options BEFORE processing.
   FetchContent_Declare(curl_src
-    URL https://curl.se/download/curl-8.13.0.tar.xz
-    URL_HASH SHA256=4a093979a3c2d02de2fbc00549a32771007f2e78032c6faa5ecd2f7a9e152025)
+    GIT_REPOSITORY https://github.com/curl/curl.git
+    GIT_TAG master)
 
   # Set options that influence curl's own CMake when it is configured by
   # FetchContent. These must be cached *before* FetchContent_MakeAvailable.
