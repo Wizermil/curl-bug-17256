@@ -74,6 +74,33 @@ static const int TOTAL_ERROR_WEIGHT = []() {
     return total;
 }();
 
+// Refined helper function with exponential backoff for mutex lock retries
+static void with_mutex_retry(std::mutex& mut, const char* context, auto&& func) {
+    int attempt = 0;
+    const int max_attempts = 5;
+    while (attempt < max_attempts) {
+        try {
+            std::lock_guard<std::mutex> lock(mut);
+            func(); // Execute the protected code
+            return;
+        } catch (const std::system_error& e) {
+            if (e.code() == std::errc::invalid_argument || e.code() == std::errc::operation_not_permitted) {
+                int delay_ms = 10 * (1 << attempt); // Exponential backoff: 10, 20, 40, 80, 160 ms
+                std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+                attempt++;
+                if (attempt == max_attempts) {
+                    std::cerr << "[error] Failed to lock " << context << " after retries: " << e.what() << std::endl;
+                    return; // Handle failure
+                }
+            } else {
+                throw; // Rethrow unexpected errors
+            }
+        } catch (...) {
+            throw; // Propagate other exceptions
+        }
+    }
+}
+
 static int hook_getaddrinfo(const char *node, const char *service,
                             const struct addrinfo *hints,
                             struct addrinfo **res) {
@@ -84,13 +111,12 @@ static int hook_getaddrinfo(const char *node, const char *service,
   
   // Register this thread as active
   {
-    std::lock_guard<std::mutex> lock(thread_map_mutex);
-    active_threads[thread_id] = true;
+    with_mutex_retry(thread_map_mutex, "thread map registration", [&]() { active_threads[thread_id] = true; });
   }
   
   int pick = dice(rng);
   int call_no = calls.fetch_add(1, std::memory_order_relaxed) + 1;
-  std::cerr << "[fishhook] call " << call_no << " host " << (node ? node : "(null)")
+  std::cerr << "\t[getaddrinfo] call " << call_no << " host " << (node ? node : "(null)")
             << " pick=" << pick << std::endl;
 
   int result;
@@ -115,13 +141,13 @@ static int hook_getaddrinfo(const char *node, const char *service,
         selected_error = &ERROR_CODES[0]; // Default to EAI_AGAIN
       }
       
-      std::cerr << "[fishhook] returning " << selected_error->name 
+      std::cerr << "\t[getaddrinfo] returning " << selected_error->name 
                 << ": " << selected_error->description << std::endl;
       result = selected_error->code;
     } else {
       if (pick < 80) { // 40% probability of significant delay
         int ms = 300 + dice(rng) % 600; // 300-900 ms
-        std::cerr << "[fishhook] delay " << ms << " ms for host "
+        std::cerr << "\t[getaddrinfo] delay " << ms << " ms for host "
                   << (node ? node : "(null)") << std::endl;
         
         // Use a shorter sleep duration and check if we're still active periodically
@@ -133,41 +159,50 @@ static int hook_getaddrinfo(const char *node, const char *service,
           // Check if this thread is still expected to be running
           bool still_active = false;
           {
-            std::lock_guard<std::mutex> lock(thread_map_mutex);
-            auto it = active_threads.find(thread_id);
-            if (it != active_threads.end()) {
-              still_active = it->second;
-            }
+            with_mutex_retry(thread_map_mutex, "thread map activity check", [&]() {
+              auto it = active_threads.find(thread_id);
+              if (it != active_threads.end()) {
+                still_active = it->second;
+              }
+            });
           }
           
           if (!still_active) {
-            std::cerr << "[fishhook] thread operation canceled during delay" << std::endl;
+            std::cerr << "\t[getaddrinfo] thread operation canceled during delay" << std::endl;
             result = EAI_CANCELED;
             goto cleanup;
           }
         }
       } else {
-        std::cerr << "[fishhook] fast resolve for host " << (node ? node : "(null)") << std::endl;
+        std::cerr << "\t[getaddrinfo] fast resolve for host " << (node ? node : "(null)") << std::endl;
       }
       
       // Protect the real getaddrinfo call with a mutex to avoid concurrent calls
       // which might lead to heap-use-after-free in curl's threaded resolver
-      std::lock_guard<std::mutex> lock(gai_mutex);
-      result = real_gai(node, service, hints, res);
+      try {
+        with_mutex_retry(gai_mutex, "gai mutex", [&]() {
+          result = real_gai(node, service, hints, res);
+        });
+      } catch (const std::exception& e) {
+        std::cerr << "\t[getaddrinfo] exception in getaddrinfo interpose: " << e.what() << std::endl;
+        result = EAI_SYSTEM;
+      } catch (...) {
+        std::cerr << "\t[getaddrinfo] unknown exception in getaddrinfo interpose" << std::endl;
+        result = EAI_SYSTEM;
+      }
     }
   } catch (const std::exception& e) {
-    std::cerr << "[fishhook] exception in getaddrinfo interpose: " << e.what() << std::endl;
+    std::cerr << "\t[getaddrinfo] exception in getaddrinfo interpose: " << e.what() << std::endl;
     result = EAI_SYSTEM;
   } catch (...) {
-    std::cerr << "[fishhook] unknown exception in getaddrinfo interpose" << std::endl;
+    std::cerr << "\t[getaddrinfo] unknown exception in getaddrinfo interpose" << std::endl;
     result = EAI_SYSTEM;
   }
   
 cleanup:
   // Unregister this thread when done
   {
-    std::lock_guard<std::mutex> lock(thread_map_mutex);
-    active_threads.erase(thread_id);
+    with_mutex_retry(thread_map_mutex, "thread map unregister", [&]() { active_threads.erase(thread_id); });
   }
   
   return result;
@@ -186,9 +221,16 @@ static void install_hook() {
 
 // Clean termination of active threads
 static void cleanup_active_threads() {
-  std::lock_guard<std::mutex> lock(thread_map_mutex);
-  std::cerr << "[fishhook] cleaning up " << active_threads.size() << " active threads" << std::endl;
-  active_threads.clear();
+  try {
+    with_mutex_retry(thread_map_mutex, "cleanup mutex", [&]() {
+      std::cerr << "[fishhook] cleaning up " << active_threads.size() << " active threads" << std::endl;
+      active_threads.clear();
+    });
+  } catch (const std::system_error& e) {
+    std::cerr << "[fishhook] error during cleanup: " << e.what() << std::endl;
+  } catch (...) {
+    std::cerr << "[fishhook] unknown error during cleanup" << std::endl;
+  }
 }
 
 __attribute__((destructor))
