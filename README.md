@@ -62,7 +62,7 @@ Run the crasher directly:
 
 To simulate DNS failures and delays:
 ```bash
-DYLD_INSERT_LIBRARIES=./libresolve_interpose.dylib ./crasher
+DYLD_INSERT_LIBRARIES=./libresolver_interpose.dylib ./crasher
 ```
 
 ### Debugging with LLDB
