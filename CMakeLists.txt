@@ -1,14 +1,20 @@
 cmake_minimum_required(VERSION 3.25)
-project(curl_multi_crasher LANGUAGES C CXX OBJCXX)
+project(curl_multi_crasher LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Add common warning flags for C++ (should be global for all C++ code)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Wpedantic")
+
 # Sanitizer options
 option(USE_ASAN "Enable Address Sanitizer with use-after-return detection" OFF)
 option(USE_UBSAN "Enable Undefined Behavior Sanitizer" OFF)
 option(USE_TSAN "Enable Thread Sanitizer" OFF)
+
+# Logging option
+option(MYAPP_ENABLE_LOGGING "Enable application-wide logging" OFF)
 
 # Sanitizer compatibility checks
 if(USE_ASAN AND USE_TSAN)
@@ -50,7 +56,7 @@ if(USE_INTERNAL_CURL)
   # Declare the source and desired build options BEFORE processing.
   FetchContent_Declare(curl_src
     GIT_REPOSITORY https://github.com/curl/curl.git
-    GIT_TAG curl-8_13_0)
+    GIT_TAG master)
 
   # Set options that influence curl's own CMake when it is configured by
   # FetchContent. These must be cached *before* FetchContent_MakeAvailable.
@@ -80,12 +86,18 @@ target_include_directories(fishhook PUBLIC third_party/fishhook)
 set_property(TARGET fishhook PROPERTY C_STANDARD 23)
 
 # Objective-C++ interposer using fishhook
-add_library(resolver_interpose SHARED fish_interposer.mm)
+add_library(resolver_interpose SHARED hook_getaddrinfo.cpp)
 target_link_libraries(resolver_interpose PRIVATE fishhook)
 set_target_properties(resolver_interpose PROPERTIES
   OUTPUT_NAME resolver_interpose
   CXX_STANDARD 23
-  OBJCXX_STANDARD 23)
+  )
+
+if(MYAPP_ENABLE_LOGGING)
+  message(STATUS "Application logging enabled.")
+  target_compile_definitions(crasher PRIVATE MYAPP_LOGGING_ENABLED)
+  target_compile_definitions(resolver_interpose PRIVATE MYAPP_LOGGING_ENABLED)
+endif()
 
 # Link against libcurl (threads come transitively)
 set_property(TARGET crasher PROPERTY POSITION_INDEPENDENT_CODE ON)

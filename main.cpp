@@ -16,6 +16,7 @@
 #include <span>
 
 // Thread-safe logging
+#ifdef MYAPP_LOGGING_ENABLED
 std::mutex cout_mutex;
 
 template <typename... Args>
@@ -26,9 +27,14 @@ void log(Args&&... args) {
     std::lock_guard<std::mutex> lock(cout_mutex);
     std::cout << stream.str() << std::endl;
 }
+#else // MYAPP_LOGGING_ENABLED
+// Empty inline function when logging is disabled
+template <typename... Args>
+inline void log(Args&&... args) { (void)sizeof...(args); /* consume arguments to prevent unused warnings */ }
+#endif // MYAPP_LOGGING_ENABLED
 
 // Discard body callback — we do not need the payload
-static size_t sink(char *ptr, size_t size, size_t nmemb, void *) {
+static size_t sink(char * /*ptr*/, size_t size, size_t nmemb, void *) {
   return size * nmemb;
 }
 

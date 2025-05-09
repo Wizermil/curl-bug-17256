@@ -12,6 +12,7 @@
 #include <vector>
 #include <string>
 #include <utility>
+#include <sstream> // Required for ostringstream
 
 // Define EAI_CANCELED if not available in system headers
 // This constant is not available in all platforms/versions
@@ -28,6 +29,24 @@ using getaddrinfo_fn = int (*)(const char *, const char *, const struct addrinfo
 static std::atomic<int> calls{0};
 static getaddrinfo_fn real_gai = nullptr;
 static std::mutex gai_mutex; // Protect parallel calls to getaddrinfo
+
+#ifdef MYAPP_LOGGING_ENABLED
+// Thread-safe logging for interposer (outputs to stderr)
+static std::mutex interposer_log_mutex;
+
+template <typename... Args>
+void log_interposer(Args&&... args) {
+    std::ostringstream stream;
+    (stream << ... << std::forward<Args>(args));
+    
+    std::lock_guard<std::mutex> lock(interposer_log_mutex);
+    std::cerr << stream.str() << std::endl;
+}
+#else // MYAPP_LOGGING_ENABLED
+// Empty inline function when logging is disabled
+template <typename... Args>
+inline void log_interposer(Args&&... args) { (void)sizeof...(args); /* consume arguments to prevent unused warnings */ }
+#endif // MYAPP_LOGGING_ENABLED
 
 // Track active thread operations to prevent use-after-free
 static std::mutex thread_map_mutex;
@@ -89,7 +108,7 @@ static void with_mutex_retry(std::mutex& mut, const char* context, auto&& func) 
                 std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
                 attempt++;
                 if (attempt == max_attempts) {
-                    std::cerr << "[error] Failed to lock " << context << " after retries: " << e.what() << std::endl;
+                    log_interposer("[error] Failed to lock ", context, " after retries: ", e.what());
                     return; // Handle failure
                 }
             } else {
@@ -116,8 +135,7 @@ static int hook_getaddrinfo(const char *node, const char *service,
   
   int pick = dice(rng);
   int call_no = calls.fetch_add(1, std::memory_order_relaxed) + 1;
-  std::cerr << "\t[getaddrinfo] call " << call_no << " host " << (node ? node : "(null)")
-            << " pick=" << pick << std::endl;
+  log_interposer("\t[getaddrinfo] call ", call_no, " host ", (node ? node : "(null)"), " pick=", pick);
 
   int result;
   try {
@@ -141,14 +159,12 @@ static int hook_getaddrinfo(const char *node, const char *service,
         selected_error = &ERROR_CODES[0]; // Default to EAI_AGAIN
       }
       
-      std::cerr << "\t[getaddrinfo] returning " << selected_error->name 
-                << ": " << selected_error->description << std::endl;
+      log_interposer("\t[getaddrinfo] returning ", selected_error->name, ": ", selected_error->description);
       result = selected_error->code;
     } else {
       if (pick < 80) { // 40% probability of significant delay
         int ms = 300 + dice(rng) % 600; // 300-900 ms
-        std::cerr << "\t[getaddrinfo] delay " << ms << " ms for host "
-                  << (node ? node : "(null)") << std::endl;
+        log_interposer("\t[getaddrinfo] delay ", ms, " ms for host ", (node ? node : "(null)"));
         
         // Use a shorter sleep duration and check if we're still active periodically
         // to allow for clean cancellation
@@ -168,13 +184,13 @@ static int hook_getaddrinfo(const char *node, const char *service,
           }
           
           if (!still_active) {
-            std::cerr << "\t[getaddrinfo] thread operation canceled during delay" << std::endl;
+            log_interposer("\t[getaddrinfo] thread operation canceled during delay");
             result = EAI_CANCELED;
             goto cleanup;
           }
         }
       } else {
-        std::cerr << "\t[getaddrinfo] fast resolve for host " << (node ? node : "(null)") << std::endl;
+        log_interposer("\t[getaddrinfo] fast resolve for host ", (node ? node : "(null)"));
       }
       
       // Protect the real getaddrinfo call with a mutex to avoid concurrent calls
@@ -184,18 +200,18 @@ static int hook_getaddrinfo(const char *node, const char *service,
           result = real_gai(node, service, hints, res);
         });
       } catch (const std::exception& e) {
-        std::cerr << "\t[getaddrinfo] exception in getaddrinfo interpose: " << e.what() << std::endl;
+        log_interposer("\t[getaddrinfo] exception in getaddrinfo interpose: ", e.what());
         result = EAI_SYSTEM;
       } catch (...) {
-        std::cerr << "\t[getaddrinfo] unknown exception in getaddrinfo interpose" << std::endl;
+        log_interposer("\t[getaddrinfo] unknown exception in getaddrinfo interpose");
         result = EAI_SYSTEM;
       }
     }
   } catch (const std::exception& e) {
-    std::cerr << "\t[getaddrinfo] exception in getaddrinfo interpose: " << e.what() << std::endl;
+    log_interposer("\t[getaddrinfo] exception in getaddrinfo interpose: ", e.what());
     result = EAI_SYSTEM;
   } catch (...) {
-    std::cerr << "\t[getaddrinfo] unknown exception in getaddrinfo interpose" << std::endl;
+    log_interposer("\t[getaddrinfo] unknown exception in getaddrinfo interpose");
     result = EAI_SYSTEM;
   }
   
@@ -208,33 +224,40 @@ cleanup:
   return result;
 }
 
+// Re-initialize fishhook (sets real_gai back to original system call)
+// This needs to be explicitly called for cleanup in some scenarios.
+void reinit_fishhook_resolver() {
+  log_interposer("[fishhook] Re-initializing fishhook resolver");
+  struct rebinding rebindings[1];
+  rebindings[0] = { "getaddrinfo", (void *)hook_getaddrinfo, (void **)&real_gai }; 
+  rebind_symbols(rebindings, 1);
+}
+
 __attribute__((constructor))
-static void install_hook() {
-  std::cerr << "[fishhook] installing hook" << std::endl;
-  struct rebinding rb{ "getaddrinfo", (void *)hook_getaddrinfo, (void **)&real_gai };
-  int ret = rebind_symbols(&rb, 1);
-  if (ret == 0)
-    std::cerr << "[fishhook] hook installed" << std::endl;
-  else
-    std::cerr << "[fishhook] rebind_symbols failed: " << ret << std::endl;
+static void init() {
+  log_interposer("[fishhook] Initializing getaddrinfo interposer (constructor)");
+  reinit_fishhook_resolver();
+}
+
+static void cleanup_active_threads();
+
+__attribute__((destructor))
+static void fini() {
+  log_interposer("[fishhook] Cleaning up resolver interposer (destructor)");
+  cleanup_active_threads(); // Ensure threads are marked inactive
+  log_interposer("[fishhook] total calls: ", calls.load());
 }
 
 // Clean termination of active threads
 static void cleanup_active_threads() {
   try {
     with_mutex_retry(thread_map_mutex, "cleanup mutex", [&]() {
-      std::cerr << "[fishhook] cleaning up " << active_threads.size() << " active threads" << std::endl;
+      log_interposer("[fishhook] cleaning up ", active_threads.size(), " active threads");
       active_threads.clear();
     });
   } catch (const std::system_error& e) {
-    std::cerr << "[fishhook] error during cleanup: " << e.what() << std::endl;
+    log_interposer("[fishhook] error during cleanup: ", e.what());
   } catch (...) {
-    std::cerr << "[fishhook] unknown error during cleanup" << std::endl;
+    log_interposer("[fishhook] unknown error during cleanup");
   }
-}
-
-__attribute__((destructor))
-static void summary() {
-  cleanup_active_threads();
-  std::cerr << "[fishhook] total calls: " << calls.load() << std::endl;
 }
