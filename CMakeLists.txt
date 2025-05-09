@@ -50,7 +50,7 @@ if(USE_INTERNAL_CURL)
   # Declare the source and desired build options BEFORE processing.
   FetchContent_Declare(curl_src
     GIT_REPOSITORY https://github.com/curl/curl.git
-    GIT_TAG master)
+    GIT_TAG curl-8_13_0)
 
   # Set options that influence curl's own CMake when it is configured by
   # FetchContent. These must be cached *before* FetchContent_MakeAvailable.
