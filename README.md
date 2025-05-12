@@ -9,7 +9,7 @@ This program:
 1. Launches multiple worker threads, each with its own `CURLM` handle
 2. Continuously adds new transfers while randomly canceling some in progress
 3. Deliberately stresses the DNS resolver by:
-   - Disabling DNS caching (`CURLOPT_DNS_CACHE_TIMEOUT=0`) 
+   - Disabling DNS caching (`CURLOPT_DNS_CACHE_TIMEOUT=0`)
    - Forbidding connection reuse (`CURLOPT_FORBID_REUSE=1`)
    - Enabling quick exit (`CURLOPT_QUICK_EXIT=1`)
 4. Uses a custom `getaddrinfo` interposer via fishhook that:
@@ -22,27 +22,31 @@ This program:
 
 - CMake 3.25 or newer
 - Clang with C++23 support
-- macOS 11+ (tested on macOS 13)
+- macOS 15+ (tested on macOS 15.4.1)
 
 ### Build Steps
 
 1. Clone this repository:
+
    ```bash
    git clone git@github.com:Wizermil/curl-bug-17256.git
    cd curl-bug-17256
    ```
 
 2. Create a build directory:
+
    ```bash
    mkdir build && cd build
    ```
 
 3. Configure the project:
+
    ```bash
    cmake .. -DCMAKE_BUILD_TYPE=RelWithDebInfo -DUSE_INTERNAL_CURL=ON
    ```
 
 4. Build:
+
    ```bash
    cmake --build . -j
    ```
@@ -54,6 +58,7 @@ The build automatically downloads and builds curl 8.13.0 from source, configured
 ### Basic Execution
 
 Run the crasher directly:
+
 ```bash
 ./crasher
 ```
@@ -61,13 +66,23 @@ Run the crasher directly:
 ### With DNS Interposition
 
 To simulate DNS failures and delays:
+
 ```bash
 DYLD_INSERT_LIBRARIES=./libresolver_interpose.dylib ./crasher
+```
+
+### With Guard Malloc
+
+Add extra test uisng [guard malloc](https://developer.apple.com/library/archive/documentation/Performance/Conceptual/ManagingMemory/Articles/MallocDebug.html)
+
+```bash
+DYLD_INSERT_LIBRARIES=/usr/lib/libgmalloc.dylib ./crasher
 ```
 
 ### Debugging with LLDB
 
 Start a debugging session:
+
 ```bash
 lldb ./crasher
 ```
@@ -88,5 +103,5 @@ Useful LLDB commands:
 ## Implementation Details
 
 - `main.cpp`: Multi-threaded stress test program
-- `fish_interposer.mm`: Objective-C++ implementation that uses fishhook to intercept DNS resolution calls
+- `hook_getaddrinfo.cpp`: C++ implementation that uses fishhook to intercept `getaddrinfo` calls
 - `CMakeLists.txt`: Configures the build with curl from source
