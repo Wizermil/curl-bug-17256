@@ -150,7 +150,7 @@ static int hook_getaddrinfo(const char *node, const char *service,
   {
     if (pick < 80)
     {
-      int ms = 3 + dice(rng) % 300; // 3-300 ms
+      int ms = 100 + dice(rng) % 300; // 100-300 ms
       log_interposer("\t[getaddrinfo] delay ", ms, " ms for host ", (node ? node : "(null)"));
       std::this_thread::sleep_for(std::chrono::milliseconds(ms));
     }
