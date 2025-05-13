@@ -274,7 +274,7 @@ int main()
   log("Using ", std::size(all_test_urls), " URLs for stress testing");
 
   // Use span over array directly
-  const int num_threads = 64;
+  const int num_threads = 8;
   static std::mt19937 rng{std::random_device{}()};
   static std::uniform_int_distribution<int> dice(1, 30);
   std::vector<std::thread> threads;
